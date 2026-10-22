@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# studio – Sointu Studion hallintakomento
+set -euo pipefail
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+DIR="$(cd "$(dirname "$SELF")/.." && pwd)"
+SERVICE="sointu-studio"
+
+c_ok()  { printf '\033[32m%s\033[0m\n' "$*"; }
+c_dim() { printf '\033[2m%s\033[0m\n' "$*"; }
+die()   { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+need_root() { [[ $EUID -eq 0 ]] || exec sudo "$SELF" "$@"; }
+envval() { grep -E "^$1=" "$DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2-; }
+PORT="$(envval STUDIO_PORT)"; PORT="${PORT:-7860}"
+
+cmd_help() {
+  cat <<EOF
+Käyttö: studio <komento>
+
+  status            palvelun tila, GPU, levy, versiot
+  start | stop | restart
+  logs [-f]         palvelun loki (-f seuraa)
+  tunnel            tulosta SSH-tunnelikomento omalle koneelle
+  update            hae uusin studio ja päivitä asennus
+  password [off]    aseta salasana web-käyttöliittymään (tai poista)
+  backup            varmuuskopioi projektit, äänimallit ja asetukset
+  doctor            tarkista ympäristöt, GPU ja mallit
+  version           versiot
+EOF
+}
+
+cmd_status() {
+  local st; st="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+  if [[ "$st" == "active" ]]; then c_ok "Palvelu: käynnissä"; else printf '\033[31mPalvelu: %s\033[0m\n' "$st"; fi
+  if curl -fsS -o /dev/null "http://127.0.0.1:$PORT/healthz" 2>/dev/null; then c_ok "Web-UI vastaa: http://127.0.0.1:$PORT"; else echo "Web-UI ei vastaa"; fi
+  echo
+  nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu \
+    --format=csv,noheader 2>/dev/null | awk -F', ' '{printf "GPU: %s · muisti %s / %s · käyttö %s · %s °C\n",$1,$2,$3,$4,$5}' || echo "GPU: ei tietoja"
+  df -h "$DIR" | awk 'NR==2 {printf "Levy: %s vapaana (%s käytössä)\n",$4,$5}'
+  [[ -d "$DIR/data" ]] && echo "Data: $(du -sh "$DIR/data" 2>/dev/null | cut -f1) · Mallit: $(du -sh "$DIR/models" 2>/dev/null | cut -f1)"
+  echo; cmd_version
+}
+
+cmd_logs() { need_root logs "$@"; journalctl -u "$SERVICE" -n 200 --no-pager "$@"; }
+
+cmd_tunnel() {
+  local ip; ip="$(curl -fsS --max-time 4 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
+  echo "Aja omalla koneellasi:"
+  echo
+  echo "    ssh -N -L $PORT:127.0.0.1:$PORT ${SUDO_USER:-$(id -un)}@$ip"
+  echo
+  echo "ja avaa selaimessa http://localhost:$PORT"
+}
+
+cmd_update() {
+  need_root update "$@"
+  [[ -d "$DIR/.git" ]] || die "Asennus ei ole git-repo; päivitä ajamalla install.sh uudelleen."
+  local before; before="$(git -C "$DIR" rev-parse --short HEAD)"
+  git -C "$DIR" fetch --quiet origin
+  git -C "$DIR" reset --quiet --hard "@{u}"
+  echo "Studio: $before → $(git -C "$DIR" rev-parse --short HEAD)"
+  bash "$DIR/scripts/setup.sh"
+}
+
+cmd_password() {
+  need_root password "$@"
+  local pw
+  if [[ "${1:-}" == "off" ]]; then
+    pw=""
+    echo "Salasana poistettu (yhteys suojataan SSH-tunnelilla)."
+  else
+    read -rsp "Uusi salasana: " pw; echo
+    read -rsp "Uudelleen: " pw2; echo
+    [[ "$pw" == "$pw2" ]] || die "Salasanat eivät täsmää."
+    [[ ${#pw} -ge 8 ]] || die "Vähintään 8 merkkiä."
+  fi
+  if grep -q '^STUDIO_PASSWORD=' "$DIR/.env"; then
+    sed -i "s|^STUDIO_PASSWORD=.*|STUDIO_PASSWORD=${pw//|/\\|}|" "$DIR/.env"
+  else
+    echo "STUDIO_PASSWORD=$pw" >> "$DIR/.env"
+  fi
+  systemctl restart "$SERVICE"
+  [[ -n "$pw" ]] && c_ok "Salasana asetettu. Käyttäjätunnukseksi kelpaa mikä tahansa."
+}
+
+cmd_backup() {
+  need_root backup "$@"
+  local out="$DIR/backups/sointu-$(date +%Y%m%d-%H%M).tar.gz"
+  echo "Varmuuskopioidaan (ilman esikäsittelytensoreita ja välivaiheita)…"
+  tar -C "$DIR" -czf "$out" \
+    --exclude='data/projects/*/tensors' --exclude='data/rvc/logs/*/sliced_audios*' \
+    --exclude='data/rvc/logs/*/f0*' --exclude='data/rvc/logs/*/extracted' \
+    --exclude='data/rvc/logs/*/G_*.pth' --exclude='data/rvc/logs/*/D_*.pth' \
+    --exclude='data/logs' \
+    .env data
+  chown studio:studio "$out"
+  c_ok "Valmis: $out ($(du -h "$out" | cut -f1))"
+  echo "Kopioi omalle koneelle:  scp ${SUDO_USER:-root}@<palvelin>:$out ."
+}
+
+cmd_doctor() {
+  local fail=0
+  chk() { if eval "$2" >/dev/null 2>&1; then c_ok "✔ $1"; else printf '\033[31m✘ %s\033[0m\n' "$1"; fail=1; fi; }
+  # shellcheck disable=SC1091
+  source "$DIR/.paths"
+  chk "NVIDIA-ajuri" "nvidia-smi"
+  chk "ffmpeg" "command -v ffmpeg"
+  chk "ACE-Step: PyTorch + CUDA" "'$ACE_DIR/.venv/bin/python' -c 'import torch;assert torch.cuda.is_available()'"
+  chk "ACE-Step: koulutusmoduuli" "cd '$ACE_DIR' && '$ACE_DIR/.venv/bin/python' -c 'import acestep.training_v2.cli.train_fixed'"
+  chk "ACE-Step: turbo-malli" "test -d '$ACESTEP_CHECKPOINTS_DIR/acestep-v15-turbo'"
+  chk "ACE-Step: base-malli" "test -d '$ACESTEP_CHECKPOINTS_DIR/acestep-v15-base'"
+  chk "Whisper (faster-whisper)" "'$ACE_DIR/.venv/bin/python' -c 'import faster_whisper'"
+  chk "Applio: PyTorch + CUDA" "'$APPLIO_DIR/.venv/bin/python' -c 'import torch;assert torch.cuda.is_available()'"
+  chk "Applio: RVC-koodi" "cd '$APPLIO_DIR' && '$APPLIO_DIR/.venv/bin/python' -c 'import rvc.infer.infer'"
+  chk "Applio: RMVPE-malli" "ls '$APPLIO_DIR'/rvc/models/predictors/rmvpe.pt"
+  chk "Vokaalierottelu" "'$APPLIO_DIR/.venv/bin/python' -c 'from audio_separator.separator import Separator'"
+  chk "Erottelumalli (laulu)" "test -f '$SEPARATOR_MODELS_DIR/$VOCAL_MODEL'"
+  chk "Web-palvelu" "curl -fsS http://127.0.0.1:$PORT/healthz"
+  return $fail
+}
+
+cmd_version() {
+  if [[ -f "$DIR/.versions" ]]; then sed 's/^/  /' "$DIR/.versions"; else echo "  versiotietoja ei löydy"; fi
+}
+
+case "${1:-help}" in
+  status) cmd_status ;;
+  start|stop|restart) need_root "$@"; systemctl "$1" "$SERVICE"; c_ok "$1: ok" ;;
+  logs) shift; cmd_logs "$@" ;;
+  tunnel) cmd_tunnel ;;
+  update) shift; cmd_update "$@" ;;
+  password) shift; cmd_password "$@" ;;
+  backup) cmd_backup ;;
+  doctor) cmd_doctor ;;
+  version|--version) cmd_version ;;
+  help|-h|--help) cmd_help ;;
+  *) echo "Tuntematon komento: $1"; cmd_help; exit 1 ;;
+esac

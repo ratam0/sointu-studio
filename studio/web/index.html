@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="fi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sointu Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400..700;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="16" cy="16" r="4" fill="currentColor"/><path d="M16 2v6M16 24v6" stroke="currentColor" stroke-width="2"/></svg>
+      <span>Sointu Studio</span>
+    </div>
+    <nav class="sections" aria-label="Osiot">
+      <button data-section="music" aria-current="true">Musiikki <small>ACE-Step</small></button>
+      <button data-section="voice" aria-current="false">Äänimallit <small>RVC</small></button>
+      <button data-section="convert" aria-current="false">Muunnos <small>oma ääni</small></button>
+    </nav>
+    <button class="btn primary wide" id="newProject">Uusi projekti</button>
+    <nav id="projectList" class="plist" aria-label="Projektit"></nav>
+    <div class="gpu" id="gpu">
+      <div class="gpu-name">GPU</div>
+      <div class="meter"><div class="meter-fill" id="gpuMem"></div></div>
+      <div class="gpu-meta" id="gpuMeta">Haetaan tilaa…</div>
+    </div>
+  </aside>
+
+  <main class="main" id="main">
+    <section class="empty" id="welcome" data-sec="music">
+      <h1>Kouluta ACE-Step oman musiikkisi tyyliin</h1>
+      <p>Luo projekti, lataa 10–50 omaa kappaletta, tarkista kuvaukset ja lyriikat, ja käynnistä LoRA-koulutus. Valmiin adapterin voi kuunnella täällä tai ladata käyttöön muualla.</p>
+      <ol class="howto">
+        <li><b>Kappaleet</b> – lataa audio, anna analyysin täyttää tempo, sävellaji, lyriikat ja kuvaus.</li>
+        <li><b>Koulutus</b> – valitse malli ja epochit, seuraa loss-käyrää.</li>
+        <li><b>Kuuntele</b> – generoi näytteitä eri checkpointeista ja valitse paras.</li>
+      </ol>
+      <button class="btn primary" id="newProject2">Luo ensimmäinen projekti</button>
+    </section>
+
+    <section id="project" data-sec="music" hidden>
+      <header class="phead">
+        <input id="pName" class="ptitle" aria-label="Projektin nimi" maxlength="80">
+        <div class="tagrow">
+          <label>Laukaisusana
+            <input id="pTag" maxlength="40" placeholder="esim. mysound" title="Lisätään jokaisen koulutuskuvauksen alkuun. Käytä samaa sanaa generoidessa.">
+          </label>
+          <label>Sijainti
+            <select id="pTagPos">
+              <option value="prepend">kuvauksen alkuun</option>
+              <option value="append">kuvauksen loppuun</option>
+              <option value="replace">korvaa kuvauksen</option>
+            </select>
+          </label>
+          <button class="btn ghost danger" id="pDelete">Poista projekti</button>
+        </div>
+      </header>
+
+      <div class="tabs" role="tablist">
+        <button role="tab" data-tab="tracks" aria-selected="true"><span class="n">1</span>Kappaleet <em id="tabTracksCount"></em></button>
+        <button role="tab" data-tab="train" aria-selected="false"><span class="n">2</span>Koulutus</button>
+        <button role="tab" data-tab="listen" aria-selected="false"><span class="n">3</span>Kuuntele</button>
+      </div>
+
+      <!-- ===================== Kappaleet ===================== -->
+      <div class="panel" data-panel="tracks">
+        <label class="drop" id="drop">
+          <input type="file" id="fileInput" multiple accept="audio/*,.flac,.opus,.m4a">
+          <strong>Pudota äänitiedostot tähän</strong> tai valitse tiedostot
+          <small>WAV, FLAC, MP3, OGG, M4A · 30 s – 4 min per kappale toimii parhaiten · vain omaa tai lisensoitua musiikkia</small>
+          <div class="upbar" id="upbar" hidden><div></div></div>
+        </label>
+
+        <div class="toolbar">
+          <div class="analyze">
+            <span class="tb-title">Automaattinen analyysi</span>
+            <label class="chk"><input type="checkbox" id="stMeta" checked> Tempo &amp; sävellaji</label>
+            <label class="chk"><input type="checkbox" id="stLyrics" checked> Laulu &amp; lyriikat</label>
+            <label class="chk"><input type="checkbox" id="stCaption" checked> Tyylikuvaus</label>
+            <select id="anLang" title="Laulun kieli Whisperille">
+              <option value="">kieli: automaattinen</option>
+              <option value="fi">suomi</option><option value="en">englanti</option>
+              <option value="sv">ruotsi</option><option value="de">saksa</option><option value="es">espanja</option>
+            </select>
+            <label class="chk"><input type="checkbox" id="anForce"> analysoi uudelleen</label>
+            <button class="btn" id="analyzeBtn">Analysoi</button>
+          </div>
+          <div class="readiness" id="readiness"></div>
+        </div>
+
+        <div id="trackList" class="tracks"></div>
+      </div>
+
+      <!-- ===================== Koulutus ===================== -->
+      <div class="panel" data-panel="train" hidden>
+        <form class="trainform" id="trainForm">
+          <div class="tf-main">
+            <label>Ajon nimi <input name="run_name" placeholder="automaattinen"></label>
+            <label>Pohjamalli <select name="variant" id="variantSel"></select></label>
+            <label>Epochit <input name="epochs" type="number" min="1" max="5000" value="200"></label>
+            <label>Tallenna joka <input name="save_every" type="number" min="1" value="25"><span class="unit">epoch</span></label>
+            <label>Muistiprofiili
+              <select name="vram_profile">
+                <option value="normal">Normaali (16–24 GB)</option>
+                <option value="saver">Säästö (12–16 GB, hitaampi)</option>
+                <option value="fast">Nopea (32 GB+)</option>
+              </select>
+            </label>
+          </div>
+          <p class="hint" id="epochHint"></p>
+          <details class="adv">
+            <summary>Lisäasetukset</summary>
+            <div class="tf-adv">
+              <label>Oppimisnopeus <input name="lr" type="number" step="0.00001" value="0.0001"></label>
+              <label>LoRA rank <input name="rank" type="number" min="4" max="256" value="64"></label>
+              <label>LoRA alpha <input name="alpha" type="number" min="1" max="512" value="128"></label>
+              <label>Dropout <input name="dropout" type="number" step="0.01" min="0" max="0.5" value="0.1"></label>
+              <label>Batch <input name="batch_size" type="number" min="1" max="8" value="1"></label>
+              <label>Gradienttikertymä <input name="grad_accum" type="number" min="1" max="32" value="4"></label>
+              <label>Attention-kerrokset
+                <select name="attention"><option value="both">self + cross</option><option value="self">self</option><option value="cross">cross</option></select>
+              </label>
+              <label>Max kesto (s) <input name="max_duration" type="number" min="30" max="600" value="240"></label>
+              <label>Siemen <input name="seed" type="number" value="42"></label>
+            </div>
+          </details>
+          <div class="tf-go">
+            <span id="trainSummary"></span>
+            <button class="btn primary" type="submit" id="trainBtn">Aloita koulutus</button>
+          </div>
+        </form>
+
+        <h2 class="sub">Koulutusajot</h2>
+        <div id="runList" class="runs"></div>
+      </div>
+
+      <!-- ===================== Kuuntele ===================== -->
+      <div class="panel" data-panel="listen" hidden>
+        <form class="genform" id="genForm">
+          <div class="gf-row">
+            <label class="grow">Adapteri
+              <select name="lora" id="loraSel"></select>
+            </label>
+            <label>Voimakkuus <input name="lora_scale" type="range" min="0" max="1.5" step="0.05" value="1"><output id="scaleOut">1.00</output></label>
+          </div>
+          <label>Kuvaus (caption)
+            <textarea name="caption" rows="2" maxlength="512" required placeholder="esim. melankolinen indie-pop, kaiutettu kitara, naislaulu, hidas tempo"></textarea>
+          </label>
+          <div class="gf-row">
+            <label class="chk"><input type="checkbox" name="instrumental"> Instrumentaali</label>
+            <label class="chk"><input type="checkbox" name="add_trigger" checked> Lisää laukaisusana</label>
+            <select id="captionFrom" title="Kopioi kuvaus ja lyriikat koulutuskappaleesta"><option value="">Kopioi kappaleesta…</option></select>
+          </div>
+          <label id="lyricsWrap">Lyriikat
+            <textarea name="lyrics" rows="6" maxlength="4096" placeholder="[Verse]&#10;…&#10;&#10;[Chorus]&#10;…"></textarea>
+          </label>
+          <div class="gf-row">
+            <label>Kesto (s) <input name="duration" type="number" min="10" max="600" value="60"></label>
+            <label>Kieli
+              <select name="language"><option value="unknown">auto</option><option value="fi">suomi</option><option value="en">englanti</option><option value="sv">ruotsi</option></select>
+            </label>
+            <label>Määrä <input name="count" type="number" min="1" max="4" value="2"></label>
+            <label>Siemen <input name="seed" type="number" value="-1" title="-1 = satunnainen"></label>
+            <button class="btn primary" type="submit">Generoi</button>
+          </div>
+        </form>
+        <div id="sampleList" class="samples"></div>
+      </div>
+    </section>
+
+    <!-- ===================== ÄÄNIMALLIT ===================== -->
+    <section class="empty" id="voiceWelcome" data-sec="voice" hidden>
+      <h1>Kouluta äänimalli omasta laulustasi</h1>
+      <p>Äänimallilla (RVC) mikä tahansa laulu – myös ACE-Stepin generoima – muuttuu kuulostamaan sinun ääneltäsi. Tarvitset 10–30 minuuttia omaa laulua; kokonaiset biisit käyvät, koska laulu erotellaan taustasta automaattisesti.</p>
+      <ol class="howto">
+        <li><b>Data</b> – lataa äänitteet ja paina Valmistele: laulu erotellaan, kaiku poistetaan ja tauot leikataan.</li>
+        <li><b>Koulutus</b> – noin 20–60 minuuttia 24 GB:n GPU:lla; tallennetut epochit voi kuunnella ja verrata.</li>
+        <li><b>Muunnos</b> – muunna biisi tai ACE-näyte omalle äänellesi.</li>
+      </ol>
+      <button class="btn primary" id="newVoice2">Luo ensimmäinen äänimalli</button>
+    </section>
+
+    <section id="voice" data-sec="voice" hidden>
+      <header class="phead">
+        <input id="vName" class="ptitle" aria-label="Äänimallin nimi" maxlength="60">
+        <div class="tagrow">
+          <span class="muted" id="vMeta"></span>
+          <button class="btn ghost danger" id="vDelete">Poista äänimalli</button>
+        </div>
+      </header>
+
+      <div class="tabs" role="tablist">
+        <button role="tab" data-vtab="data" aria-selected="true"><span class="n">1</span>Data <em id="vTabCount"></em></button>
+        <button role="tab" data-vtab="train" aria-selected="false"><span class="n">2</span>Koulutus ja mallit</button>
+      </div>
+
+      <div class="vpanel" data-vpanel="data">
+        <div class="minutes" id="minutes">
+          <div class="min-head"><b id="minVal">0:00</b> puhdasta laulua <span class="muted" id="minHint"></span></div>
+          <div class="min-track" aria-hidden="true">
+            <div class="min-zone" style="left:0;width:16.6%"></div>
+            <div class="min-zone good" style="left:16.6%;width:33.4%"></div>
+            <div class="min-fill" id="minFill"></div>
+            <div class="min-raw" id="minRaw"></div>
+          </div>
+          <div class="min-scale"><span>0</span><span style="left:16.6%">10 min</span><span style="left:50%">30 min</span><span style="left:100%">60 min</span></div>
+        </div>
+
+        <label class="drop" id="vDrop">
+          <input type="file" id="vFileInput" multiple accept="audio/*,.flac,.opus,.m4a">
+          <strong>Pudota omat lauluäänitteet tähän</strong> tai valitse tiedostot
+          <small>Kokonaiset biisit tai pelkkä laulu · vain sinun oma äänesi · selkeä, kuiva laulu antaa parhaan tuloksen</small>
+          <div class="upbar" id="vUpbar" hidden><div></div></div>
+        </label>
+
+        <div class="toolbar">
+          <div class="analyze">
+            <span class="tb-title">Valmistelu</span>
+            <span class="muted">Jokaiselle tiedostolle voi valita käsittelyt alla.</span>
+            <label class="chk"><input type="checkbox" id="vForce"> valmistele uudelleen</label>
+            <button class="btn" id="prepareBtn">Valmistele data</button>
+          </div>
+        </div>
+        <div id="vFileList" class="tracks"></div>
+      </div>
+
+      <div class="vpanel" data-vpanel="train" hidden>
+        <form class="trainform" id="vTrainForm">
+          <div class="tf-main">
+            <label>Ajon nimi <input name="run_name" placeholder="automaattinen"></label>
+            <label>Epochit <input name="epochs" type="number" min="10" max="2000" value="300"></label>
+            <label>Tallenna joka <input name="save_every" type="number" min="1" max="500" value="25"><span class="unit">epoch</span></label>
+            <label>Näytetaajuus
+              <select name="sample_rate"><option value="40000">40 kHz</option><option value="48000">48 kHz</option><option value="32000">32 kHz</option></select>
+            </label>
+            <label>Batch <input name="batch_size" type="number" min="1" max="32" value="8"></label>
+          </div>
+          <p class="hint" id="vEpochHint"></p>
+          <details class="adv">
+            <summary>Lisäasetukset</summary>
+            <div class="tf-adv">
+              <label>Vokooderi
+                <select name="vocoder"><option value="HiFi-GAN">HiFi-GAN (suositus)</option><option value="RefineGAN">RefineGAN (kokeellinen, 32 kHz)</option></select>
+              </label>
+            </div>
+          </details>
+          <div class="tf-go">
+            <span id="vTrainSummary"></span>
+            <button class="btn primary" type="submit" id="vTrainBtn">Aloita koulutus</button>
+          </div>
+        </form>
+        <h2 class="sub">Koulutusajot ja mallit</h2>
+        <div id="vRunList" class="runs"></div>
+      </div>
+    </section>
+
+    <!-- ===================== MUUNNOS ===================== -->
+    <section id="convert" data-sec="convert" hidden>
+      <header class="phead">
+        <h1 class="ptitle static">Muunnos omalle äänelle</h1>
+        <p class="muted lede">Lataa biisi tai laulu, tai valitse ACE-Stepillä generoitu näyte. Laulu erotellaan taustasta, muunnetaan äänimallillasi ja miksataan takaisin.</p>
+      </header>
+
+      <form class="genform" id="convForm">
+        <div class="seg wide" role="group" aria-label="Lähde">
+          <button type="button" data-src="upload" aria-pressed="true">Lataa tiedosto</button>
+          <button type="button" data-src="ace" aria-pressed="false">ACE-näyte</button>
+        </div>
+        <div id="srcUpload">
+          <label class="drop small" id="cDrop">
+            <input type="file" id="cFileInput" accept="audio/*,.flac,.opus,.m4a">
+            <strong id="cFileLabel">Pudota biisi tai laulu tähän</strong> tai valitse tiedosto
+            <div class="upbar" id="cUpbar" hidden><div></div></div>
+          </label>
+        </div>
+        <div id="srcAce" hidden>
+          <label>ACE-näyte <select id="aceSel"></select></label>
+          <audio id="acePreview" controls preload="none"></audio>
+        </div>
+
+        <div class="gf-row">
+          <label class="grow">Äänimalli <select name="model" id="modelSel" required></select></label>
+        </div>
+        <div class="gf-row">
+          <label class="chk"><input type="checkbox" name="separate" checked> Erota laulu taustasta</label>
+          <label class="chk"><input type="checkbox" name="dereverb"> Poista kaiku laulusta</label>
+        </div>
+        <div class="sliders">
+          <label>Sävelkorkeus <output data-for="pitch">0</output>
+            <input type="range" name="pitch" min="-12" max="12" step="1" value="0">
+            <small>+12 = oktaavi ylös (esim. miesääni naislaulajan biisiin −12)</small></label>
+          <label>Indeksin vaikutus <output data-for="index_rate">0.50</output>
+            <input type="range" name="index_rate" min="0" max="1" step="0.05" value="0.5">
+            <small>suurempi = enemmän sinun äänesi sointia, voi lisätä artefakteja</small></label>
+          <label>Konsonanttien suojaus <output data-for="protect">0.33</output>
+            <input type="range" name="protect" min="0" max="0.5" step="0.01" value="0.33">
+            <small>pienempi = vahvempi muunnos, suurempi = selkeämmät s- ja hengitysäänet</small></label>
+          <label>Laulun taso <output data-for="vocal_gain_db">0 dB</output>
+            <input type="range" name="vocal_gain_db" min="-12" max="12" step="0.5" value="0"></label>
+          <label>Taustan taso <output data-for="inst_gain_db">0 dB</output>
+            <input type="range" name="inst_gain_db" min="-12" max="12" step="0.5" value="0"></label>
+          <label>Sävelkorkeuden tunnistus
+            <select name="f0_method"><option value="rmvpe">RMVPE (suositus)</option><option value="fcpe">FCPE</option><option value="crepe">CREPE</option></select></label>
+        </div>
+        <div class="gf-row">
+          <span class="muted" id="convHint"></span>
+          <button class="btn primary" type="submit" id="convBtn">Muunna</button>
+        </div>
+      </form>
+      <h2 class="sub">Muunnokset</h2>
+      <div id="convList" class="samples"></div>
+    </section>
+  </main>
+
+  <!-- ===================== Työt ===================== -->
+  <aside class="dock" id="dock">
+    <div class="dock-head">
+      <span>Työjono</span>
+      <span id="queueInfo" class="muted"></span>
+    </div>
+    <div id="jobList" class="jobs"></div>
+    <div id="jobDetail" class="jobdetail" hidden>
+      <div class="jd-head">
+        <div>
+          <div id="jdTitle" class="jd-title"></div>
+          <div id="jdStep" class="muted"></div>
+        </div>
+        <button class="btn ghost danger" id="jdStop">Pysäytä</button>
+      </div>
+      <div class="bigbar"><div id="jdBar"></div></div>
+      <div class="jd-stats" id="jdStats"></div>
+      <canvas id="lossChart" height="170" hidden></canvas>
+      <pre id="jdLog" class="log" tabindex="0" aria-label="Työn loki"></pre>
+    </div>
+  </aside>
+</div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

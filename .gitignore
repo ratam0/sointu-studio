@@ -1,0 +1,12 @@
+vendor/
+models/
+data/
+backups/
+.env
+.paths
+.versions
+.python/
+.cache/
+install.log
+__pycache__/
+*.pyc
