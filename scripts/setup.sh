@@ -31,7 +31,7 @@ LOG="$DIR/install.log"
 export UV_PYTHON_INSTALL_DIR="$DIR/.python"
 export UV_CACHE_DIR="$DIR/.cache/uv"
 export UV_HTTP_TIMEOUT=300
-export UV_LINK_MODE=copy
+export MODELSCOPE_CACHE="$MODELS/modelscope"
 export HF_HOME="$MODELS/hf"
 export ACESTEP_CHECKPOINTS_DIR="$MODELS/ace"
 export APPLIO_LOGS_DIR="$DATA/rvc/logs"
@@ -42,8 +42,28 @@ TOTAL=10
 step() { STEP=$((STEP + 1)); printf '\n\033[1;36m[%d/%d] %s\033[0m\n' "$STEP" "$TOTAL" "$*"; }
 ok()   { printf '\033[32m  ✔ %s\033[0m\n' "$*"; }
 warn() { printf '\033[33m  ! %s\033[0m\n' "$*"; }
-die()  { printf '\n\033[1;31mAsennus keskeytyi: %s\033[0m\n  Loki: %s\n' "$*" "$LOG" >&2; exit 1; }
+die()  {
+  printf '\n\033[1;31mAsennus keskeytyi: %s\033[0m\n' "$*" >&2
+  if [[ -s "$LOG" ]]; then
+    printf '\n\033[2m--- lokin viimeiset rivit (%s) ---\033[0m\n' "$LOG" >&2
+    tail -n 25 "$LOG" >&2
+    printf '\033[2m---\033[0m\n' >&2
+  fi
+  printf 'Korjauksen jälkeen aja asennus uudelleen – se jatkaa siitä, mihin jäi.\n' >&2
+  exit 1
+}
 run()  { "$@" >>"$LOG" 2>&1 || die "komento epäonnistui: $*"; }
+# Isot lataukset: 4 yritystä tauoin; keskeneräiset tiedostot jatkuvat
+retry() {
+  local n
+  for n in 1 2 3 4; do
+    "$@" >>"$LOG" 2>&1 && return 0
+    (( n < 4 )) || break
+    echo "  yritys $n epäonnistui, yritetään uudelleen $((n * 20)) s kuluttua…"
+    sleep $((n * 20))
+  done
+  die "lataus epäonnistui 4 kertaa: $*"
+}
 trap 'die "odottamaton virhe rivillä $LINENO"' ERR
 
 [[ $EUID -eq 0 ]] || die "Aja rootina (sudo)."
@@ -65,7 +85,11 @@ DRIVER_MAJOR="${DRIVER%%.*}"
 (( DRIVER_MAJOR >= 570 )) || warn "Ajuri $DRIVER voi olla liian vanha CUDA 12.8 -paketeille (suositus ≥ 570)."
 FREE_GB="$(df -BG --output=avail "$DIR" | tail -1 | tr -dc '0-9')"
 ok "Vapaata levyä: ${FREE_GB} GB"
-(( FREE_GB >= 60 )) || warn "Suositus on vähintään 60 GB vapaata (mallit ~35 GB + data)."
+if [[ ! -x "$ACE_DIR/.venv/bin/python" ]]; then
+  # Uusi asennus: Python-ympäristöt ~16 GB + mallit ~22 GB + väliaikaiset ~8 GB
+  (( FREE_GB >= 50 )) || die "Levytilaa on ${FREE_GB} GB, mutta asennus tarvitsee noin 50 GB (suositus 80 GB+, jotta datalle jää tilaa). Kasvata palvelimen levyä tai liitä lisälevy kansioon $DIR."
+fi
+(( FREE_GB >= 80 )) || warn "Suositus on vähintään 80 GB, jotta koulutusdatalle ja malleille jää tilaa."
 
 # ================================================================ 2. järjestelmäpaketit
 step "Asennetaan järjestelmäpaketit"
@@ -129,20 +153,27 @@ cat > "$APPLIO_CONFIG_DIR/config.json" <<EOF
 { "precision": "$PREC", "discord_presence": false }
 EOF
 ok "Koulutustarkkuus: $PREC"
+# Pakettivälimuisti ei ole enää tarpeen (ympäristöt on asennettu) – vapautetaan useita gigatavuja
+uv cache clean >>"$LOG" 2>&1 || true
+rm -rf /root/.cache/modelscope /root/.cache/pip 2>/dev/null || true
 
 # ================================================================ 5. mallit
-step "Ladataan mallit (~35 GB ensimmäisellä kerralla)"
+step "Ladataan mallit (~22 GB ensimmäisellä kerralla)"
 if [[ "$SKIP_MODELS" == "1" ]]; then
   warn "SKIP_MODELS=1 – mallien lataus ohitettu"
 else
   echo "  ACE-Step: turbo DiT, VAE, tekstienkooderi, 1.7B-kielimalli…"
-  run "$ACE_DIR/.venv/bin/acestep-download" --dir "$MODELS/ace"
+  df_gb="$(df -BG --output=avail "$MODELS" | tail -1 | tr -dc '0-9')"
+  used_gb="$(du -s --block-size=1G "$MODELS" 2>/dev/null | cut -f1)"
+  need_gb=$(( NO_BASE == 1 ? 18 : 24 ))
+  (( df_gb + ${used_gb:-0} >= need_gb )) || die "Levytilaa on vain ${df_gb} GB, mutta mallit tarvitsevat noin ${need_gb} GB. Vapauta tilaa (ks. 'df -h') tai kasvata levyä. Pienempi vaihtoehto: NO_BASE=1 (säästää ~5 GB)."
+  retry "$ACE_DIR/.venv/bin/acestep-download" --dir "$MODELS/ace"
   if [[ "$NO_BASE" != "1" ]]; then
     echo "  ACE-Step: base-malli…"
-    run "$ACE_DIR/.venv/bin/acestep-download" --dir "$MODELS/ace" --model acestep-v15-base --skip-main
+    retry "$ACE_DIR/.venv/bin/acestep-download" --dir "$MODELS/ace" --model acestep-v15-base --skip-main
   fi
   echo "  Applio: esikoulutetut RVC-mallit, RMVPE, ContentVec…"
-  (cd "$APPLIO_DIR" && run "$APY" core.py prerequisites --pretraineds-hifigan --models --no-exe)
+  (cd "$APPLIO_DIR" && retry "$APY" core.py prerequisites --pretraineds-hifigan --models --no-exe)
   echo "  Vokaalierottelu: Roformer-mallit…"
   "$APY" - "$MODELS/separator" "$VOCAL_MODEL" "$KARAOKE_MODEL" "$DEREVERB_MODEL" >>"$LOG" 2>&1 <<'PY' || die "Erottelumallien lataus epäonnistui"
 import sys

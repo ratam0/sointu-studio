@@ -14,7 +14,7 @@ Palvelimelle (Ubuntu 22.04/24.04, NVIDIA-GPU ja ajurit asennettuna):
 curl -fsSL https://raw.githubusercontent.com/ratam0/sointu-studio/main/install.sh | sudo bash
 ```
 
-Asennus kestää noin 30–60 minuuttia, koska PyTorch ja mallit vievät yhteensä noin 35 GB. Asennin ei kysy mitään. Lopuksi se tulostaa SSH-tunnelikomennon.
+Asennus kestää noin 30–60 minuuttia, koska PyTorch-ympäristöt ja mallit vievät yhteensä noin 40 GB. Asennin ei kysy mitään. Lopuksi se tulostaa SSH-tunnelikomennon.
 
 Omalla koneellasi:
 
@@ -30,7 +30,7 @@ Sen jälkeen avaa selaimessa **http://localhost:7860**. Studio kuuntelee vain pa
 |---|---|---|
 | GPU | NVIDIA 16 GB | 24 GB (RTX 4090/3090, A10, L4) tai enemmän |
 | NVIDIA-ajuri | 570+ (CUDA 12.8) | uusin |
-| Levy | 60 GB vapaata | 100 GB+ |
+| Levy | 50 GB vapaata | 80 GB+ |
 | RAM | 16 GB | 32 GB |
 | Järjestelmä | Ubuntu/Debian ja systemd (tavallinen VPS, ei kontti) | |
 
